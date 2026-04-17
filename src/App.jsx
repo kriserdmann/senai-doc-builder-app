@@ -23,20 +23,20 @@ export default function App() {
     setIsDragging(false);
   };
 
-  const processFile = async (file) => {
-    if (!file || !file.name.endsWith('.zip')) {
-      alert("Por favor, selecione um arquivo .zip exportado do Notion.");
+  const processData = async (data, isZip) => {
+    if (!data || (isZip && !data.name.endsWith('.zip'))) {
+      alert("Por favor, selecione um arquivo .zip ou uma pasta extraída do Notion.");
       return;
     }
     
-    setOriginalName(file.name.replace('.zip', ''));
+    setOriginalName(isZip ? data.name.replace('.zip', '') : 'Notion-Export');
     setIsProcessing(true);
     setProgress(0);
     setCurrentFile('Iniciando processamento...');
     setResultBlob(null);
 
     try {
-      const generatedBlob = await processZip(file, (percent, fileName) => {
+      const generatedBlob = await processZip(data, (percent, fileName) => {
         setProgress(Math.round(percent * 100));
         setCurrentFile(`Processando: ${fileName}`);
       });
@@ -50,16 +50,82 @@ export default function App() {
     }
   };
 
-  const handleDrop = (e) => {
+  const traverseFileTree = async (item, path = '') => {
+    return new Promise((resolve) => {
+      if (item.isFile) {
+        item.file((file) => {
+          resolve([{ path: path + file.name, file }]);
+        });
+      } else if (item.isDirectory) {
+        const dirReader = item.createReader();
+        let allEntries = [];
+        
+        const readEntries = () => {
+          dirReader.readEntries(async (entries) => {
+            if (entries.length === 0) {
+              let results = [];
+              for (const entry of allEntries) {
+                results = results.concat(await traverseFileTree(entry, path + item.name + "/"));
+              }
+              resolve(results);
+            } else {
+              allEntries = allEntries.concat(Array.from(entries));
+              readEntries();
+            }
+          });
+        };
+        readEntries();
+      } else {
+        resolve([]);
+      }
+    });
+  };
+
+  const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    processFile(file);
+    
+    const items = e.dataTransfer.items;
+    if (!items || items.length === 0) return;
+
+    let isZip = false;
+    let singleFile = null;
+    
+    if (items.length === 1) {
+      const item = items[0].webkitGetAsEntry();
+      if (item && item.isFile) {
+         const file = e.dataTransfer.files[0];
+         if (file.name.toLowerCase().endsWith('.zip')) {
+           isZip = true;
+           singleFile = file;
+         }
+      }
+    }
+
+    if (isZip) {
+      processData(singleFile, true);
+    } else {
+      let allFiles = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i].webkitGetAsEntry();
+        if (item) {
+           allFiles = allFiles.concat(await traverseFileTree(item));
+        }
+      }
+      processData(allFiles, false);
+    }
   };
 
   const handleFileInput = (e) => {
-    const file = e.target.files[0];
-    processFile(file);
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    
+    if (files.length === 1 && files[0].name.toLowerCase().endsWith('.zip')) {
+      processData(files[0], true);
+    } else {
+      const fileData = files.map(f => ({ path: f.webkitRelativePath || f.name, file: f }));
+      processData(fileData, false);
+    }
   };
 
   const handleDownload = () => {
@@ -85,11 +151,13 @@ export default function App() {
             onClick={() => fileInputRef.current.click()}
           >
             <UploadCloud size={64} className="dropzone-icon" />
-            <p>Arraste seu arquivo Notion (.zip) aqui</p>
+            <p>Arraste seu arquivo Notion (.zip) ou pasta extraída aqui</p>
             <span>ou clique para procurar pelo seu computador</span>
             <input 
               type="file" 
-              accept=".zip,application/zip" 
+              multiple
+              webkitdirectory="true"
+              accept=".zip,application/zip,.md,text/markdown,image/*" 
               className="hidden" 
               style={{ display: 'none' }}
               ref={fileInputRef}

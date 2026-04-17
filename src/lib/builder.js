@@ -109,9 +109,15 @@ async function fetchAssetAsBlob(path) {
   return await res.blob();
 }
 
-export async function processZip(inputZipFile, onProgress) {
+export async function processZip(inputZipFileOrArray, onProgress) {
   const inZip = new JSZip();
-  await inZip.loadAsync(inputZipFile);
+  if (inputZipFileOrArray instanceof File && inputZipFileOrArray.name.toLowerCase().endsWith('.zip')) {
+    await inZip.loadAsync(inputZipFileOrArray);
+  } else if (Array.isArray(inputZipFileOrArray)) {
+    for (const item of inputZipFileOrArray) {
+      inZip.file(item.path, item.file);
+    }
+  }
   
   const outZip = new JSZip();
 
@@ -127,21 +133,24 @@ export async function processZip(inputZipFile, onProgress) {
   let totalFiles = Object.keys(inZip.files).length;
   let processedFiles = 0;
 
+  let mdFiles = Object.keys(inZip.files).filter(p => !inZip.files[p].dir && p.toLowerCase().endsWith('.md'));
+  let shallowestMd = mdFiles.length > 0 ? mdFiles.reduce((min, p) => p.split('/').length < min.split('/').length ? p : min, mdFiles[0]) : null;
+
   for (const [relativePath, file] of Object.entries(inZip.files)) {
     if (file.dir) continue;
 
     processedFiles++;
     if (onProgress) onProgress(processedFiles / totalFiles, relativePath);
 
-    // Filter if it's an image
-    if (relativePath.match(/\.(jpg|jpeg|png|gif|svg|webp)$/i)) {
+    // Filter if it's an image or attachment
+    if (relativePath.match(/\.(jpg|jpeg|png|gif|svg|webp|pdf|mp4|webm|csv|txt|zip)$/i)) {
       const decodedName = decodeURIComponent(relativePath.split('/').pop());
       const blob = await file.async('blob');
       outZip.file(`images/${decodedName}`, blob);
       continue;
     }
 
-    if (!relativePath.endsWith('.md')) continue;
+    if (!relativePath.toLowerCase().endsWith('.md')) continue;
 
     const originalFilename = relativePath.split('/').pop();
     const fileName = getBasename(originalFilename);
@@ -152,7 +161,7 @@ export async function processZip(inputZipFile, onProgress) {
     let markdownContent = fileContent;
 
     if (!isNotionExport) {
-      const match = fileContent.match(/^(?:---)\n([\s\S]+?)\n(?:---)\n([\s\S]*)$/);
+      const match = fileContent.match(/^(?:---)\r?\n([\s\S]+?)\r?\n(?:---)\r?\n([\s\S]*)$/);
       if (match) {
         try { meta = yaml.load(match[1]); markdownContent = match[2]; } catch (e) { console.error('YAML error:', e); }
       }
@@ -215,14 +224,16 @@ export async function processZip(inputZipFile, onProgress) {
       htmlContent += attachesHtml;
     }
 
-    const isIndex = baseName === 'index';
+    const isExplicitIndex = baseName.toLowerCase() === 'index';
+    const isIndex = isExplicitIndex || (relativePath === shallowestMd);
+    const outName = isIndex ? 'index' : baseName;
     const template = isIndex ? indexTemplate : layoutTemplate;
-    const finalHtml = processTemplate(template, { id: baseName, title, duration, description, content: htmlContent });
+    const finalHtml = processTemplate(template, { id: outName, title, duration, description, content: htmlContent });
 
-    outZip.file(`${baseName}.html`, finalHtml);
+    outZip.file(`${outName}.html`, finalHtml);
 
     if (!isIndex) {
-      syllabus.push({ id: baseName, title: title || baseName, block, duration, sortKey: isNotionExport ? parseSortKey(stripNotionUUID(fileName)) : baseName });
+      syllabus.push({ id: outName, title: title || outName, block, duration, sortKey: isNotionExport ? parseSortKey(stripNotionUUID(fileName)) : outName });
     }
   }
 
